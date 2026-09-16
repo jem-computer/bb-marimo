@@ -12,7 +12,8 @@ agents check, run, convert, and export them.
 
 ## How it works
 
-The plugin starts one `marimo edit` server per workspace root on the BB
+marimo pages are restyled with BB's active theme (palette, fonts, light/dark), so
+notebooks look native inside BB. The plugin starts one `marimo edit` server per workspace root on the BB
 machine, using the project's `.venv`, `marimo` on PATH, or `uvx` as a fallback.
 Servers run headless on loopback and stop when idle. Nothing leaves the
 machine and no account is needed.

@@ -2,9 +2,12 @@
 // server per workspace root (it serves every notebook under that root), plus
 // one `marimo run` server per notebook shown as an app.
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
 import path from "node:path";
+import { findFreePort } from "./ports.js";
+import { startProxy, type ProxyHandle, type ThemeSource } from "./proxy.js";
 import { childEnv, type ResolvedCommand } from "./resolve.js";
+
+export { findFreePort };
 
 export type ServerMode = "edit" | "run";
 export type ServerStatus = "starting" | "running" | "exited";
@@ -16,7 +19,10 @@ export interface ServerInfo {
   /** Root-relative notebook path for `run` servers; null for `edit`. */
   file: string | null;
   port: number;
+  /** Proxied URL clients should use (theme-injecting). */
   url: string;
+  /** marimo itself, without the proxy. */
+  upstreamUrl: string;
   pid: number | null;
   status: ServerStatus;
   command: string;
@@ -32,6 +38,7 @@ export interface NotebookEntry {
 
 interface ServerRecord extends ServerInfo {
   child: ChildProcess | null;
+  proxy: ProxyHandle | null;
   token: string | null;
   log: string[];
   ready: Promise<void>;
@@ -52,6 +59,8 @@ export interface ManagerOptions {
   resolveCommand(root: string): ResolvedCommand;
   getSettings(): Promise<ManagerSettings>;
   onChange(): void;
+  /** Theme stylesheet injected by the per-server proxy. */
+  theme: ThemeSource;
   /** Milliseconds to wait for `/health`; defaults to 45s. */
   startupTimeoutMs?: number;
 }
@@ -71,23 +80,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       { once: true },
     );
   });
-}
-
-function isPortFree(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = createServer();
-    probe.once("error", () => resolve(false));
-    probe.listen(port, HOST, () => {
-      probe.close(() => resolve(true));
-    });
-  });
-}
-
-export async function findFreePort(from: number, attempts = 200): Promise<number> {
-  for (let port = from; port < from + attempts && port <= 65535; port += 1) {
-    if (await isPortFree(port)) return port;
-  }
-  throw new Error(`No free port found in ${from}–${from + attempts}`);
 }
 
 export function serverKey(root: string, mode: ServerMode, file: string | null): string {
@@ -192,7 +184,7 @@ export class MarimoServerManager {
     if (record.mode !== "edit") return [];
     await record.ready;
     const token = record.token ?? (await this.fetchToken(record));
-    const response = await fetch(`${record.url}/api/home/workspace_files`, {
+    const response = await fetch(`${record.upstreamUrl}/api/home/workspace_files`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -231,7 +223,7 @@ export class MarimoServerManager {
   }
 
   private toInfo(record: ServerRecord): ServerInfo {
-    const { child: _child, token: _token, log: _log, ready: _ready, ...info } = record;
+    const { child: _child, proxy: _proxy, token: _token, log: _log, ready: _ready, ...info } = record;
     return { ...info };
   }
 
@@ -267,6 +259,7 @@ export class MarimoServerManager {
       file,
       port,
       url: `http://${HOST}:${port}`,
+      upstreamUrl: `http://${HOST}:${port}`,
       pid: null,
       status: "starting",
       command: [binary, ...args].join(" "),
@@ -274,6 +267,7 @@ export class MarimoServerManager {
       lastUsedAt: now,
       exitCode: null,
       child: null,
+      proxy: null,
       token: null,
       log: [],
       ready: Promise.resolve(),
@@ -313,8 +307,11 @@ export class MarimoServerManager {
 
     record.ready = this.waitUntilHealthy(record).then(
       async () => {
-        record.status = "running";
         record.token = await this.fetchToken(record).catch(() => null);
+        const proxy = await startProxy({ targetPort: port, basePort: settings.basePort + 1000, theme: this.options.theme });
+        record.proxy = proxy;
+        record.url = proxy.url;
+        record.status = "running";
         this.options.onChange();
       },
       async (error: unknown) => {
@@ -337,7 +334,7 @@ export class MarimoServerManager {
         );
       }
       try {
-        const response = await fetch(`${record.url}/health`, {
+        const response = await fetch(`${record.upstreamUrl}/health`, {
           signal: AbortSignal.timeout(2_000),
         });
         if (response.ok) return;
@@ -352,13 +349,17 @@ export class MarimoServerManager {
   }
 
   private async fetchToken(record: ServerRecord): Promise<string | null> {
-    const response = await fetch(`${record.url}/`, { signal: AbortSignal.timeout(5_000) });
+    const response = await fetch(`${record.upstreamUrl}/`, { signal: AbortSignal.timeout(5_000) });
     const html = await response.text();
     const match = html.match(/<marimo-server-token[^>]*data-token="([^"]+)"/);
     return match?.[1] ?? null;
   }
 
   private async kill(record: ServerRecord): Promise<void> {
+    if (record.proxy !== null) {
+      await record.proxy.close().catch(() => undefined);
+      record.proxy = null;
+    }
     const child = record.child;
     if (child === null || child.exitCode !== null) {
       record.status = "exited";

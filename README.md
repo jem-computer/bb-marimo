@@ -20,6 +20,17 @@ export notebooks. Modeled on the marimo VS Code extension.
 
 ## How it works
 
+**BB theme → marimo.** The plugin puts a tiny loopback proxy in front of
+each marimo server. The BB frontend reads the resolved values of BB's palette
+tokens (`--canvas`, `--ink`, `--primary`, fonts, …) whenever the theme or
+light/dark mode changes and sends them to the plugin, which maps them onto
+marimo's CSS variables (`--background`, `--foreground`, `--primary`,
+`--marimo-text-font`, …), injects that stylesheet into every marimo HTML page,
+and flips marimo's own light/dark setting to match BB. Open notebook tabs
+reload automatically. Nothing is written to your repo or to marimo's config;
+turn it off with the `syncTheme` setting. Syntax-highlighting colors inside
+cells still come from marimo.
+
 One `marimo edit` server runs per workspace root (it serves every notebook
 under it); one `marimo run` server runs per notebook opened as an app. Servers
 start headless on loopback with `--no-token`, are health-checked before use,
@@ -41,6 +52,7 @@ marimo is resolved per workspace in this order:
 | `sandbox` | `false` | Pass `--sandbox` (per-notebook uv environment). |
 | `watch` | `true` | Pass `--watch` so file edits by agents reload in the editor. |
 | `idleMinutes` | `120` | Stop servers idle this long (`0` = never). |
+| `syncTheme` | `true` | Restyle marimo with BB's active theme. |
 
 ## Install
 

@@ -14,6 +14,7 @@ import {
   type ServerInfo,
   type ServerMode,
 } from "./server/manager.js";
+import { buildMarimoCss, BB_TOKENS, isSafeCssValue, type BbPalette } from "./server/theme.js";
 import {
   MarimoNotFoundError,
   resolveMarimoCommand,
@@ -31,6 +32,7 @@ const serverInfoSchema = z.object({
   file: z.string().nullable(),
   port: z.number(),
   url: z.string(),
+  upstreamUrl: z.string(),
   pid: z.number().nullable(),
   status: z.enum(["starting", "running", "exited"]),
   command: z.string(),
@@ -45,6 +47,17 @@ const projectSummarySchema = z.object({
   root: z.string().nullable(),
   environmentId: z.string().nullable(),
   server: serverInfoSchema.nullable(),
+});
+const paletteSchema = z.object({
+  mode: z.enum(["light", "dark"]),
+  themeId: z.string().nullable(),
+  tokens: z.record(z.string().regex(/^[a-z0-9-]{1,64}$/), z.string().max(400)),
+});
+const themeStateSchema = z.object({
+  enabled: z.boolean(),
+  palette: paletteSchema.nullable(),
+  updatedAt: z.number().nullable(),
+  css: z.string(),
 });
 const marimoStatusSchema = z.object({
   command: z.string().nullable(),
@@ -107,7 +120,20 @@ export const rpcContract = defineRpcContract({
     input: z.object({ id: z.string() }),
     output: z.object({ lines: z.array(z.string()) }),
   },
+  /** The frontend pushes BB's resolved palette here whenever it changes. */
+  theme_set: {
+    input: paletteSchema,
+    output: themeStateSchema,
+  },
+  theme_get: {
+    input: z.null(),
+    output: themeStateSchema,
+  },
 });
+
+export type BbPaletteInput = z.infer<typeof paletteSchema>;
+export type ThemeState = z.infer<typeof themeStateSchema>;
+export { BB_TOKENS };
 
 export type ProjectSummary = z.infer<typeof projectSummarySchema>;
 export type MarimoInfo = z.infer<typeof marimoStatusSchema>;
@@ -115,6 +141,8 @@ export type { ServerInfo, ServerMode };
 
 /** Realtime channel: any server started, became healthy, exited, or stopped. */
 export const SERVERS_CHANGED = "servers-changed";
+/** Realtime channel: the injected theme stylesheet changed; iframes should reload. */
+export const THEME_CHANGED = "theme-changed";
 
 const TOOL_OUTPUT_CAP = 60_000;
 function capText(text: string): string {
@@ -152,6 +180,30 @@ export default async function plugin(bb: BbPluginApi) {
       experimental_schema: z.number().int().min(0).max(24 * 60),
       default: 120,
     },
+    syncTheme: {
+      type: "boolean",
+      label: "Restyle marimo with BB's active theme (colors, fonts, light/dark)",
+      default: true,
+    },
+  });
+
+  // ---- theme bridge ------------------------------------------------------
+
+  const THEME_KEY = "theme-palette";
+  let palette: BbPalette | null = (await bb.storage.kv.get<BbPalette>(THEME_KEY)) ?? null;
+  let themeEnabled = (await settings.get()).syncTheme;
+  let themeCss = palette === null ? "" : buildMarimoCss(palette);
+  const themeSource = {
+    current: () => (themeEnabled && palette !== null && themeCss !== "" ? { css: themeCss, mode: palette.mode } : null),
+  };
+  function themeState(): ThemeState {
+    return { enabled: themeEnabled, palette, updatedAt: palette?.updatedAt ?? null, css: themeCss };
+  }
+  settings.onChange((next) => {
+    if (next.syncTheme !== themeEnabled) {
+      themeEnabled = next.syncTheme;
+      bb.realtime.publish(THEME_CHANGED, { at: Date.now() });
+    }
   });
 
   const manager = new MarimoServerManager({
@@ -162,6 +214,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { basePort, sandbox, watch };
     },
     onChange: () => bb.realtime.publish(SERVERS_CHANGED, { at: Date.now() }),
+    theme: themeSource,
   });
 
   let currentCommandOverride = (await settings.get()).marimoCommand;
@@ -355,6 +408,21 @@ export default async function plugin(bb: BbPluginApi) {
     restart: ({ id }) => manager.restart(id),
     notebooks: async ({ serverId }) => ({ notebooks: await manager.notebooks(serverId) }),
     logs: ({ id }) => ({ lines: manager.logs(id) }),
+    theme_get: async () => themeState(),
+    theme_set: async (input) => {
+      const tokens: Record<string, string> = {};
+      for (const [name, value] of Object.entries(input.tokens)) {
+        if (isSafeCssValue(value) && value.trim() !== "") tokens[name] = value.trim();
+      }
+      const next: BbPalette = { mode: input.mode, themeId: input.themeId, tokens, updatedAt: Date.now() };
+      const nextCss = buildMarimoCss(next);
+      const changed = nextCss !== themeCss || next.mode !== palette?.mode;
+      palette = next;
+      themeCss = nextCss;
+      await bb.storage.kv.set(THEME_KEY, next);
+      if (changed) bb.realtime.publish(THEME_CHANGED, { at: Date.now() });
+      return themeState();
+    },
   });
 
   // ---- agent tools ------------------------------------------------------

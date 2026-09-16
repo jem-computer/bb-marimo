@@ -7,18 +7,22 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   definePluginApp,
+  experimental_useCodeTheme,
   useBbNavigate,
   useRealtime,
   useRpc,
+  useSettings,
   type PluginFileOpenerProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import type { MarimoInfo, ProjectSummary, ServerInfo, ServerMode, rpcContract } from "./server";
+import type { MarimoInfo, ProjectSummary, ServerInfo, ServerMode, ThemeState, rpcContract } from "./server";
+import { BB_TOKENS } from "./server/theme";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 
 const SERVERS_CHANGED = "servers-changed";
+const THEME_CHANGED = "theme-changed";
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -99,6 +103,9 @@ function NotebookOpener({ path, source, Original }: PluginFileOpenerProps) {
   useEffect(() => {
     void open(mode);
   }, [open, mode]);
+
+  // BB's theme changed: the proxy serves new CSS, so reload the document.
+  useRealtime(THEME_CHANGED, () => setReloadKey((key) => key + 1));
 
   // If the server behind this tab dies, re-open to pick up a fresh one.
   useRealtime(SERVERS_CHANGED, () => {
@@ -416,6 +423,7 @@ function MarimoPage() {
           ) : (
             <span className="text-muted-foreground">
               marimo v{info.version} via {info.source} · <span className="font-mono">{info.command}</span>
+              <ThemeStatus />
             </span>
           )}
         </div>
@@ -467,6 +475,7 @@ function MarimoPage() {
 }
 
 export default definePluginApp((app) => {
+  app.slots.experimental_appOverlay({ id: "theme-sync", component: ThemeSync });
   app.slots.fileOpener({
     id: "notebook",
     title: "marimo notebook",
@@ -481,3 +490,89 @@ export default definePluginApp((app) => {
     component: MarimoPage,
   });
 });
+
+// ---------------------------------------------------------------------------
+// Theme bridge: read BB's resolved palette and push it to the server, which
+// injects it into every marimo page through the per-server proxy.
+// ---------------------------------------------------------------------------
+
+function readBbPalette(): Record<string, string> {
+  const tokens: Record<string, string> = {};
+  const roots = [document.documentElement, document.body];
+  for (const name of BB_TOKENS) {
+    for (const root of roots) {
+      const value = getComputedStyle(root).getPropertyValue(`--${name}`).trim();
+      if (value !== "") {
+        tokens[name] = value;
+        break;
+      }
+    }
+  }
+  return tokens;
+}
+
+function ThemeSync() {
+  const rpc = useRpc<typeof rpcContract>();
+  const { values } = useSettings();
+  const code = experimental_useCodeTheme();
+  const enabled = values?.syncTheme !== false;
+  const [tick, setTick] = useState(0);
+
+  // Re-read when the html/body class list changes (BB toggles mode/theme there).
+  useEffect(() => {
+    if (!enabled) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const observer = new MutationObserver(() => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => setTick((value) => value + 1), 150);
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
+    return () => {
+      observer.disconnect();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [enabled]);
+
+  const lastSent = useMemo(() => ({ value: "" }), []);
+  useEffect(() => {
+    if (!enabled) return;
+    const frame = requestAnimationFrame(() => {
+      const tokens = readBbPalette();
+      const payload = { mode: code.mode, themeId: code.name || null, tokens };
+      const serialized = JSON.stringify(payload);
+      if (serialized === lastSent.value) return;
+      lastSent.value = serialized;
+      rpc.call("theme_set", payload).catch(() => {
+        lastSent.value = "";
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [rpc, enabled, code.mode, code.name, tick, lastSent]);
+
+  return null;
+}
+
+function ThemeStatus() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [state, setState] = useState<ThemeState | null>(null);
+  const refetch = useCallback(() => {
+    rpc.call("theme_get", null).then(setState, () => setState(null));
+  }, [rpc]);
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+  useRealtime(THEME_CHANGED, refetch);
+  if (state === null) return null;
+  const count = state.palette === null ? 0 : Object.keys(state.palette.tokens).length;
+  return (
+    <span className="text-muted-foreground">
+      {" · "}
+      {!state.enabled
+        ? "BB theme sync off"
+        : state.palette === null
+          ? "BB theme not captured yet"
+          : `BB theme ${state.palette.themeId ?? ""} (${state.palette.mode}, ${count} tokens) applied to marimo`}
+    </span>
+  );
+}

@@ -55,6 +55,10 @@ Equivalent CLI: `bb marimo status | start | open <nb> [--run] | notebooks | stop
 
 ## Constraints
 
+- marimo pages are served through a plugin proxy that injects BB's theme. The
+  `url` from `marimo_open` is the proxied one; `upstreamUrl` in `bb marimo
+  status --json` is marimo itself.
+
 - v1 runs marimo only on the BB server machine (local environments). Remote
   environments return an "unsupported" error.
 - marimo resolution order: plugin `marimoCommand` setting → `.venv/bin/marimo`

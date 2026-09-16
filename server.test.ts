@@ -93,6 +93,7 @@ describe("manager", () => {
       onChange: () => {
         changes += 1;
       },
+      theme: { current: () => ({ css: "html:root { --background: #123456; }", mode: "dark" }) },
       startupTimeoutMs: 10_000,
     });
   });
@@ -144,6 +145,7 @@ describe("manager", () => {
       resolveCommand: () => ({ argv: [process.execPath, path.join(here, "test", "exit-early.mjs")], source: "setting" }),
       getSettings: async () => ({ basePort: 28280, sandbox: false, watch: false }),
       onChange: () => {},
+      theme: { current: () => null },
       startupTimeoutMs: 5_000,
     });
     await expect(broken.ensure(root, "edit")).rejects.toThrow(/exited before it became healthy.*boom/s);

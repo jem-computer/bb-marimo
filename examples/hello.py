@@ -7,6 +7,7 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -19,7 +20,9 @@ def _(mo):
 
 @app.cell
 def _(mo, slider):
-    mo.md(f"**{slider.value}** squared is **{slider.value ** 2}**")
+    mo.md(f"""
+    **{slider.value}** squared is **{slider.value ** 2}**
+    """)
     return
 
 
