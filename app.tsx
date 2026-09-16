@@ -10,6 +10,7 @@ import {
   experimental_useCodeTheme,
   useBbNavigate,
   useRealtime,
+  useRealtimeConnectionState,
   useRpc,
   useSettings,
   type PluginFileOpenerProps,
@@ -106,6 +107,19 @@ function NotebookOpener({ path, source, Original }: PluginFileOpenerProps) {
 
   // BB's theme changed: the proxy serves new CSS, so reload the document.
   useRealtime(THEME_CHANGED, () => setReloadKey((key) => key + 1));
+
+  // The plugin was reloaded (or the socket dropped): servers and URLs may have
+  // changed underneath this tab, so resolve the notebook again.
+  const connection = useRealtimeConnectionState();
+  const seenConnected = useMemo(() => ({ value: false }), []);
+  useEffect(() => {
+    if (connection !== "connected") return;
+    if (!seenConnected.value) {
+      seenConnected.value = true;
+      return;
+    }
+    void open(mode);
+  }, [connection, open, mode, seenConnected]);
 
   // If the server behind this tab dies, re-open to pick up a fresh one.
   useRealtime(SERVERS_CHANGED, () => {

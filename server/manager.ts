@@ -230,7 +230,9 @@ export class MarimoServerManager {
   private async start(root: string, mode: ServerMode, file: string | null): Promise<ServerRecord> {
     const settings = await this.options.getSettings();
     const command = this.options.resolveCommand(root);
-    const port = await findFreePort(settings.basePort + (mode === "run" ? 10 : 0));
+    // marimo itself listens on a high port; the proxy takes the user-facing one
+    // (basePort for editors, basePort + 10 for apps) so stale links hit the proxy.
+    const port = await findFreePort(settings.basePort + 1000 + (mode === "run" ? 100 : 0));
     const args = [
       ...command.argv.slice(1),
       "--yes",
@@ -308,7 +310,7 @@ export class MarimoServerManager {
     record.ready = this.waitUntilHealthy(record).then(
       async () => {
         record.token = await this.fetchToken(record).catch(() => null);
-        const proxy = await startProxy({ targetPort: port, basePort: settings.basePort + 1000, theme: this.options.theme });
+        const proxy = await startProxy({ targetPort: port, basePort: settings.basePort + (mode === "run" ? 10 : 0), theme: this.options.theme });
         record.proxy = proxy;
         record.url = proxy.url;
         record.status = "running";
