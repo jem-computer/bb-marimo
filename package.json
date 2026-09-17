@@ -55,5 +55,13 @@
     "build": "bb plugin build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jem-computer/bb-marimo.git"
+  },
+  "homepage": "https://github.com/jem-computer/bb-marimo#readme",
+  "bugs": {
+    "url": "https://github.com/jem-computer/bb-marimo/issues"
   }
 }
