@@ -5,6 +5,8 @@ notebook file and get marimo's editor in the file panel, manage servers per
 project from a sidebar page, and give agents tools to check, run, convert, and
 export notebooks. Modeled on the marimo VS Code extension.
 
+![A BB thread editing a marimo notebook, with the marimo editor open in the file panel styled in BB's dark theme](docs/screenshot.jpg)
+
 ## What you get
 
 - **File opener** for `.py` and `.md`. Files that are marimo notebooks
